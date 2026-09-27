@@ -100,45 +100,79 @@ def _render_add_edit_delete():
 def _render_enrollment():
     st.subheader("Enroll Face")
     st.caption(
-        "Captures a short burst of face samples from the webcam and (re)trains the "
-        "recognizer. Make sure the student has given consent before enrolling, per "
-        "the college's data policy."
+        "Capture multiple clear photos of the student's face "
+        "to train the face recognizer."
     )
 
     students = db.get_students()
+
     if not students:
         st.info("Add a student first.")
         return
 
-    options = {f"{s['roll_number']} — {s['name']}": s for s in students}
-    choice = st.selectbox("Select student to enroll", list(options.keys()), key="enroll_select")
+    options = {
+        f"{s['roll_number']} — {s['name']}": s
+        for s in students
+    }
+
+    choice = st.selectbox(
+        "Select student to enroll",
+        list(options.keys()),
+        key="enroll_select"
+    )
+
     student = options[choice]
 
     existing = count_samples(student["roll_number"])
-    st.write(f"Existing samples on disk: **{existing}**")
 
-    if st.button("Start Capture", type="primary", key="start_capture"):
+    st.write(
+        f"Existing samples: **{existing}**"
+    )
+
+    if st.button(
+        "📷 Start Face Enrollment",
+        type="primary"
+    ):
+        st.session_state["enrolling_student"] = student["id"]
+        st.rerun()
+
+    if st.session_state.get("enrolling_student") == student["id"]:
         _capture_samples(student)
 
 
 def _capture_samples(student):
     import numpy as np
 
-    st.subheader("📷 Capture Face Sample")
+    st.subheader("📷 Face Enrollment")
+
+    st.info(
+        "Take 5 clear photos. Look straight at the camera "
+        "and slightly change your face angle between photos."
+    )
 
     picture = st.camera_input(
-        "Take a clear photo of the student's face",
-        key=f"face_camera_{student['id']}"
+        "Take a face photo",
+        key=f"face_camera_{student['id']}",
+        resolution="720p"
     )
 
     if picture is None:
-        st.info("📸 Take a photo to enroll the face.")
         return
 
-    bytes_data = picture.getvalue()
+    image_bytes = picture.getvalue()
+
+    # Prevent the same photo from being saved repeatedly
+    import hashlib
+
+    image_hash = hashlib.md5(image_bytes).hexdigest()
+
+    if st.session_state.get("last_face_hash") == image_hash:
+        return
+
+    st.session_state["last_face_hash"] = image_hash
 
     frame = cv2.imdecode(
-        np.frombuffer(bytes_data, np.uint8),
+        np.frombuffer(image_bytes, np.uint8),
         cv2.IMREAD_COLOR
     )
 
@@ -147,20 +181,26 @@ def _capture_samples(student):
         return
 
     detector = FaceDetector()
+
     boxes = detector.detect(frame)
 
     if len(boxes) == 0:
-        st.error("❌ No face detected. Please take another photo.")
+        st.error("❌ No face detected. Try again with better lighting.")
         return
 
     if len(boxes) > 1:
-        st.warning("⚠️ Multiple faces detected. Keep only one person in the photo.")
+        st.warning(
+            "⚠️ Multiple faces detected. Keep only one person visible."
+        )
         return
 
     face = detector.crop_face(frame, boxes[0])
 
-    existing = count_samples(student["roll_number"])
-    sample_number = existing + 1
+    current_count = count_samples(
+        student["roll_number"]
+    )
+
+    sample_number = current_count + 1
 
     save_face_sample(
         student["roll_number"],
@@ -169,7 +209,7 @@ def _capture_samples(student):
     )
 
     st.success(
-        f"✅ Face sample {sample_number} saved successfully!"
+        f"✅ Face sample {sample_number}/5 saved!"
     )
 
     st.image(
@@ -178,26 +218,48 @@ def _capture_samples(student):
         caption="Captured face"
     )
 
-    st.write(
-        f"Total samples: **{sample_number}**"
-    )
-
     if sample_number >= 5:
-        with st.spinner("Training face recognizer..."):
+
+        with st.spinner(
+            "Training face recognition model..."
+        ):
+
             all_students = db.get_students()
-            _, samples = retrain_all(all_students)
+
+            _, samples = retrain_all(
+                all_students
+            )
 
             if student["id"] in samples:
-                db.set_face_enrolled(student["id"], True)
-                st.success(
-                    "🎉 Face enrollment completed successfully!"
+
+                db.set_face_enrolled(
+                    student["id"],
+                    True
                 )
+
+                st.success(
+                    "🎉 Face enrollment completed!"
+                )
+
+                st.session_state.pop(
+                    "enrolling_student",
+                    None
+                )
+
+                st.session_state.pop(
+                    "last_face_hash",
+                    None
+                )
+
             else:
-                st.error("❌ Training failed. Please capture another sample.")
+                st.error(
+                    "❌ Training failed."
+                )
 
     else:
+
+        remaining = 5 - sample_number
+
         st.info(
-            f"📸 Capture at least {5 - sample_number} more photo(s) "
-            "from slightly different angles."
+            f"📸 Take {remaining} more photo(s)."
         )
-           
