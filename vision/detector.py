@@ -11,7 +11,6 @@ class FaceDetector:
                 os.path.dirname(__file__),
                 "haarcascade_frontalface_default.xml"
             ),
-
             os.path.join(
                 cv2.data.haarcascades,
                 "haarcascade_frontalface_default.xml"
@@ -27,17 +26,16 @@ class FaceDetector:
 
         if cascade_path is None:
             raise RuntimeError(
-                "Haar cascade file not found. "
-                "Please add haarcascade_frontalface_default.xml "
-                "to the vision folder."
+                "Haar cascade file not found."
             )
 
-      self.cascade = cv2.CascadeClassifier()
+        self.cascade = cv2.CascadeClassifier()
 
-if not self.cascade.load(cascade_path):
-    raise RuntimeError(
-        f"Could not load Haar cascade from {cascade_path}"
-    )
+        if not self.cascade.load(cascade_path):
+            raise RuntimeError(
+                f"Could not load Haar cascade from {cascade_path}"
+            )
+
     def detect(self, frame_bgr):
 
         gray = cv2.cvtColor(
@@ -73,3 +71,6 @@ if not self.cascade.load(cascade_path):
             y:y + h,
             x:x + w
         ]
+
+       
+            
