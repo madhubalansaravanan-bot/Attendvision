@@ -1,98 +1,13 @@
-import threading
 from datetime import date
 
-import av
 import cv2
+import numpy as np
 import streamlit as st
-
 
 import config
 import database as db
 from vision.detector import FaceDetector
 from vision.recognizer import FaceRecognizer
-
-
-RTC_CONFIGURATION = {
-    "iceServers": [
-        {"urls": ["stun:stun.l.google.com:19302"]}
-    ]
-}
-
-
-class AttendanceProcessor:
-    def __init__(self, recognizer, detector, students, session_id):
-        self.recognizer = recognizer
-        self.detector = detector
-        self.students = students
-        self.session_id = session_id
-
-        self.lock = threading.Lock()
-        self.recognized_ids = set()
-        self.match_streak = {}
-
-    def process(self, frame):
-        img = frame.to_ndarray(format="bgr24")
-
-        boxes = self.detector.detect(img)
-
-        for box in boxes:
-            x, y, w, h = box
-
-            face_gray = self.detector.crop_face(img, box)
-            student_id, distance = self.recognizer.predict(face_gray)
-
-            if student_id is not None and student_id in self.students:
-
-                label = (
-                    f"{self.students[student_id]['name']} "
-                    f"({self.students[student_id]['roll_number']})"
-                )
-
-                color = (0, 200, 0)
-
-                with self.lock:
-                    self.match_streak[student_id] = (
-                        self.match_streak.get(student_id, 0) + 1
-                    )
-
-                    if (
-                        self.match_streak[student_id]
-                        >= config.CONSECUTIVE_MATCH_FRAMES_REQUIRED
-                    ):
-                        self.recognized_ids.add(student_id)
-
-                        try:
-                            db.mark_attendance(
-                                self.session_id,
-                                student_id,
-                                float(distance)
-                            )
-                        except Exception:
-                            pass
-
-            else:
-                label = "Unknown"
-                color = (0, 0, 220)
-
-            cv2.rectangle(
-                img,
-                (x, y),
-                (x + w, y + h),
-                color,
-                2
-            )
-
-            cv2.putText(
-                img,
-                label,
-                (x, max(y - 10, 15)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                color,
-                2
-            )
-
-        return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 
 def render():
@@ -110,20 +25,22 @@ def render_setup():
 
     if not subjects:
         st.warning(
-            "No subjects exist yet. Add one under **Subjects** first."
+            "No subjects exist yet. Add one under Subjects first."
         )
         return
 
+    st.subheader("Start Attendance Session")
+
     with st.form("start_attendance_form"):
 
-        c1, c2 = st.columns(2)
+        col1, col2 = st.columns(2)
 
-        department = c1.text_input(
+        department = col1.text_input(
             "Department",
             value="Aerospace"
         )
 
-        section = c2.text_input(
+        section = col2.text_input(
             "Class / Section",
             value="A"
         )
@@ -138,14 +55,14 @@ def render_setup():
             list(subject_options.keys())
         )
 
-        c3, c4 = st.columns(2)
+        col3, col4 = st.columns(2)
 
-        session_date = c3.date_input(
+        session_date = col3.date_input(
             "Date",
             value=date.today()
         )
 
-        hour = c4.number_input(
+        hour = col4.number_input(
             "Hour",
             min_value=1,
             max_value=12,
@@ -154,13 +71,14 @@ def render_setup():
         )
 
         start = st.form_submit_button(
-            "START CAMERA",
+            "START ATTENDANCE",
             type="primary"
         )
 
     if not start:
         return
 
+    # Get students
     students = db.get_students(
         department=department,
         section=section
@@ -172,20 +90,27 @@ def render_setup():
         )
         return
 
+    # Load face recognizer
     recognizer = FaceRecognizer()
 
     if not recognizer.is_trained:
         st.error(
-            "No enrolled faces found. "
-            "Enroll a student's face first."
+            "❌ No enrolled faces found. "
+            "Enroll at least one student's face first."
         )
         return
 
-    user = st.session_state["user"]
+    user = st.session_state.get("user")
+
+    if not user:
+        st.error("User session expired. Please log in again.")
+        return
 
     subject_id = subject_options[subject_label]
+
     session_date_str = session_date.isoformat()
 
+    # Check for existing open session
     existing = db.find_open_session(
         subject_id,
         session_date_str,
@@ -196,9 +121,11 @@ def render_setup():
     try:
 
         if existing:
+
             session_id = existing["id"]
 
         else:
+
             session_id = db.create_session(
                 subject_id,
                 user["id"],
@@ -209,70 +136,90 @@ def render_setup():
 
     except Exception as e:
 
-        st.error(f"Could not create attendance session: {e}")
+        st.error(
+            f"Could not create attendance session: {e}"
+        )
         return
 
-    detector = FaceDetector()
+    # Store everything needed by the live page
+    st.session_state["attendance_running"] = True
 
-    processor = AttendanceProcessor(
-        recognizer,
-        detector,
-        {s["id"]: s for s in students},
-        session_id
+    st.session_state["attendance_session_id"] = session_id
+
+    st.session_state["attendance_students"] = {
+        s["id"]: s
+        for s in students
+    }
+
+    st.session_state["attendance_subject_label"] = (
+        subject_label
     )
 
-    st.session_state["attendance_running"] = True
-    st.session_state["attendance_session_id"] = session_id
-    st.session_state["attendance_processor"] = processor
-    st.session_state["attendance_students"] = {
-        s["id"]: s for s in students
-    }
-    st.session_state["attendance_subject_label"] = subject_label
     st.session_state["attendance_hour"] = int(hour)
-    st.session_state["attendance_date"] = session_date_str
+
+    st.session_state["attendance_date"] = (
+        session_date_str
+    )
 
     st.rerun()
 
 
 def render_live():
 
-    session_id = st.session_state["attendance_session_id"]
+    session_id = st.session_state[
+        "attendance_session_id"
+    ]
+
+    subject_label = st.session_state[
+        "attendance_subject_label"
+    ]
+
+    hour = st.session_state[
+        "attendance_hour"
+    ]
+
+    session_date = st.session_state[
+        "attendance_date"
+    ]
+
+    students = st.session_state[
+        "attendance_students"
+    ]
 
     st.subheader(
-        f"{st.session_state['attendance_subject_label']} "
-        f"— Hour {st.session_state['attendance_hour']} "
-        f"— {st.session_state['attendance_date']}"
+        f"{subject_label} — Hour {hour} — {session_date}"
     )
 
     st.info(
-        "Click START below and allow camera permission when your browser asks."
+        "📷 Take a clear classroom photo. "
+        "The system will detect and recognize enrolled students."
     )
 
-    processor = st.session_state["attendance_processor"]
-
-    def video_callback(frame):
-        return processor.process(frame)
-
-    ctx = webrtc_streamer(
-        key=f"attendance-{session_id}",
-        video_frame_callback=video_callback,
-        rtc_configuration=RTC_CONFIGURATION,
-        media_stream_constraints={
-            "video": True,
-            "audio": False
-        }
+    # Browser camera
+    picture = st.camera_input(
+        "Take Attendance Photo",
+        key=f"attendance_camera_{session_id}"
     )
+
+    if picture is not None:
+
+        process_attendance_photo(
+            picture,
+            session_id,
+            students
+        )
 
     st.divider()
 
-    records = db.get_session_records(session_id)
+    # Attendance summary
+    records = db.get_session_records(
+        session_id
+    )
 
     present_ids = {
-        r["student_id"]
-        for r in records
+        record["student_id"]
+        for record in records
     }
-
-    students = st.session_state["attendance_students"]
 
     col1, col2 = st.columns(2)
 
@@ -283,7 +230,10 @@ def render_live():
 
     col2.metric(
         "Remaining",
-        max(len(students) - len(present_ids), 0)
+        max(
+            len(students) - len(present_ids),
+            0
+        )
     )
 
     st.subheader("📋 Live Attendance")
@@ -310,18 +260,241 @@ def render_live():
         type="primary"
     ):
 
-        db.end_session(session_id)
+        db.end_session(
+            session_id
+        )
 
-        for key in [
-            "attendance_running",
-            "attendance_session_id",
-            "attendance_processor",
-            "attendance_students",
-            "attendance_subject_label",
-            "attendance_hour",
-            "attendance_date"
-        ]:
-            st.session_state.pop(key, None)
+        clear_attendance_state()
 
-        st.success("Attendance session ended.")
+        st.success(
+            "Attendance session ended."
+        )
+
         st.rerun()
+
+
+def process_attendance_photo(
+    picture,
+    session_id,
+    students
+):
+
+    image_bytes = picture.getvalue()
+
+    frame = cv2.imdecode(
+        np.frombuffer(
+            image_bytes,
+            np.uint8
+        ),
+        cv2.IMREAD_COLOR
+    )
+
+    if frame is None:
+
+        st.error(
+            "❌ Could not read the captured image."
+        )
+
+        return
+
+    # Face detector
+    try:
+
+        detector = FaceDetector()
+
+    except Exception as e:
+
+        st.error(
+            f"❌ Face detector error: {e}"
+        )
+
+        return
+
+    # Face recognizer
+    try:
+
+        recognizer = FaceRecognizer()
+
+    except Exception as e:
+
+        st.error(
+            f"❌ Face recognizer error: {e}"
+        )
+
+        return
+
+    if not recognizer.is_trained:
+
+        st.error(
+            "❌ Face recognition model is not trained."
+        )
+
+        return
+
+    # Detect faces
+    try:
+
+        boxes = detector.detect(
+            frame
+        )
+
+    except Exception as e:
+
+        st.error(
+            f"❌ Face detection failed: {e}"
+        )
+
+        return
+
+    if len(boxes) == 0:
+
+        st.warning(
+            "⚠️ No face detected. "
+            "Make sure the face is clearly visible "
+            "and there is enough lighting."
+        )
+
+        st.image(
+            frame,
+            channels="BGR",
+            caption="Captured image"
+        )
+
+        return
+
+    recognized_names = []
+
+    unknown_count = 0
+
+    # Process every detected face
+    for box in boxes:
+
+        x, y, w, h = box
+
+        face_gray = detector.crop_face(
+            frame,
+            box
+        )
+
+        student_id, distance = (
+            recognizer.predict(
+                face_gray
+            )
+        )
+
+        # Recognized
+        if (
+            student_id is not None
+            and student_id in students
+        ):
+
+            student = students[
+                student_id
+            ]
+
+            name = student["name"]
+
+            roll_number = student[
+                "roll_number"
+            ]
+
+            # Mark attendance
+            marked = db.mark_attendance(
+                session_id,
+                student_id,
+                float(distance)
+            )
+
+            recognized_names.append(
+                name
+            )
+
+            # Green box
+            cv2.rectangle(
+                frame,
+                (x, y),
+                (x + w, y + h),
+                (0, 200, 0),
+                3
+            )
+
+            cv2.putText(
+                frame,
+                f"{name} ({roll_number})",
+                (x, max(y - 10, 20)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 200, 0),
+                2
+            )
+
+        # Unknown face
+        else:
+
+            unknown_count += 1
+
+            cv2.rectangle(
+                frame,
+                (x, y),
+                (x + w, y + h),
+                (0, 0, 255),
+                2
+            )
+
+            cv2.putText(
+                frame,
+                "Unknown",
+                (x, max(y - 10, 20)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 0, 255),
+                2
+            )
+
+    # Show processed image
+    st.image(
+        frame,
+        channels="BGR",
+        caption="Attendance Result"
+    )
+
+    # Results
+    if recognized_names:
+
+        unique_names = list(
+            dict.fromkeys(
+                recognized_names
+            )
+        )
+
+        for name in unique_names:
+
+            st.success(
+                f"✅ Attendance marked: {name}"
+            )
+
+    if unknown_count > 0:
+
+        st.warning(
+            f"⚠️ {unknown_count} "
+            "unknown face(s) detected."
+        )
+
+
+def clear_attendance_state():
+
+    keys = [
+        "attendance_running",
+        "attendance_session_id",
+        "attendance_students",
+        "attendance_subject_label",
+        "attendance_hour",
+        "attendance_date"
+    ]
+
+    for key in keys:
+
+        st.session_state.pop(
+            key,
+            None
+        )
