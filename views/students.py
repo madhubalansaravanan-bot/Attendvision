@@ -122,58 +122,63 @@ def _render_enrollment():
 
 
 def _capture_samples(student):
-    target = config.FACE_SAMPLES_PER_STUDENT
-    frame_slot = st.empty()
-    status_slot = st.empty()
-    progress = st.progress(0)
+    st.subheader("📷 Capture Face Samples")
 
-    try:
+    st.info(
+        "Allow camera access, take clear photos of your face, "
+        "and capture multiple angles."
+    )
+
+    picture = st.camera_input(
+        "Take a face photo",
+        key=f"face_camera_{student['id']}",
+        resolution="720p"
+    )
+
+    if picture is not None:
+        import numpy as np
+        import cv2
+
+        bytes_data = picture.getvalue()
+
+        frame = cv2.imdecode(
+            np.frombuffer(bytes_data, np.uint8),
+            cv2.IMREAD_COLOR
+        )
+
         detector = FaceDetector()
-        with Camera() as cam:
-            captured = count_samples(student["roll_number"])
-            start_count = captured
-            attempts = 0
-            max_attempts = target * 20  # safety valve so a bad angle can't loop forever
+        faces = detector.detect(frame)
 
-            while captured - start_count < target and attempts < max_attempts:
-                attempts += 1
-                frame = cam.read_frame()
-                boxes = detector.detect(frame)
+        if len(faces) == 0:
+            st.error("❌ No face detected. Please try again.")
+            return
 
-                display_frame = frame.copy()
-                for (x, y, w, h) in boxes:
-                    cv2.rectangle(display_frame, (x, y), (x + w, y + h), (0, 200, 0), 2)
-                frame_slot.image(display_frame, channels="BGR", caption="Enrollment preview")
+        if len(faces) > 1:
+            st.warning("⚠️ Multiple faces detected. Keep only one face visible.")
+            return
 
-                if len(boxes) == 1:
-                    face = detector.crop_face(frame, boxes[0])
-                    captured += 1
-                    save_face_sample(student["roll_number"], face, captured)
-                elif len(boxes) == 0:
-                    status_slot.warning("No face detected — face the camera directly.")
-                else:
-                    status_slot.warning("Multiple faces detected — only one person should be in frame.")
+        face = detector.crop_face(frame, faces[0])
 
-                progress.progress(min((captured - start_count) / target, 1.0))
-                time.sleep(0.08)
+        student_dir = os.path.join(
+            config.STUDENT_FACES_DIR,
+            str(student["id"])
+        )
 
-        frame_slot.empty()
+        os.makedirs(student_dir, exist_ok=True)
 
-        if captured - start_count < target:
-            st.warning(
-                f"Only captured {captured - start_count}/{target} samples before stopping. "
-                "You can run capture again to add more."
-            )
-        else:
-            status_slot.success(f"Captured {target} new samples.")
+        existing = len(os.listdir(student_dir))
+        filename = os.path.join(
+            student_dir,
+            f"{existing + 1}.jpg"
+        )
 
-        with st.spinner("Retraining recognizer on all enrolled students..."):
-            all_students = db.get_students()
-            _, samples = retrain_all(all_students)
-            if student["id"] in samples:
-                db.set_face_enrolled(student["id"], True)
+        cv2.imwrite(filename, face)
 
-        st.success(f"{student['name']} is enrolled and the recognizer has been retrained.")
+        st.success(
+            f"✅ Face sample {existing + 1} captured successfully."
+        )
 
-    except CameraError as e:
-        st.error(f"Camera error: {e}")
+        st.image(frame, channels="BGR")
+
+        if st.button("🔄 Capture Another Photo"):
+            st.rerun()
