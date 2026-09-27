@@ -1,4 +1,3 @@
-import os
 import cv2
 
 
@@ -6,34 +5,18 @@ class FaceDetector:
 
     def __init__(self):
 
-        possible_paths = [
-            os.path.join(
-                os.path.dirname(__file__),
-                "haarcascade_frontalface_default.xml"
-            ),
-            os.path.join(
-                cv2.data.haarcascades,
-                "haarcascade_frontalface_default.xml"
-            )
-        ]
+        cascade_path = (
+            cv2.data.haarcascades
+            + "haarcascade_frontalface_default.xml"
+        )
 
-        cascade_path = None
+        self.cascade = cv2.CascadeClassifier(
+            cascade_path
+        )
 
-        for path in possible_paths:
-            if os.path.exists(path):
-                cascade_path = path
-                break
-
-        if cascade_path is None:
+        if self.cascade.empty():
             raise RuntimeError(
-                "Haar cascade file not found."
-            )
-
-        self.cascade = cv2.CascadeClassifier()
-
-        if not self.cascade.load(cascade_path):
-            raise RuntimeError(
-                f"Could not load Haar cascade from {cascade_path}"
+                "Could not load OpenCV built-in Haar cascade."
             )
 
     def detect(self, frame_bgr):
@@ -71,6 +54,3 @@ class FaceDetector:
             y:y + h,
             x:x + w
         ]
-
-       
-            
