@@ -122,63 +122,82 @@ def _render_enrollment():
 
 
 def _capture_samples(student):
-    st.subheader("📷 Capture Face Samples")
+    import numpy as np
 
-    st.info(
-        "Allow camera access, take clear photos of your face, "
-        "and capture multiple angles."
-    )
+    st.subheader("📷 Capture Face Sample")
 
     picture = st.camera_input(
-        "Take a face photo",
-        key=f"face_camera_{student['id']}",
-        resolution="720p"
+        "Take a clear photo of the student's face",
+        key=f"face_camera_{student['id']}"
     )
 
-    if picture is not None:
-        import numpy as np
-        import cv2
+    if picture is None:
+        st.info("📸 Take a photo to enroll the face.")
+        return
 
-        bytes_data = picture.getvalue()
+    bytes_data = picture.getvalue()
 
-        frame = cv2.imdecode(
-            np.frombuffer(bytes_data, np.uint8),
-            cv2.IMREAD_COLOR
+    frame = cv2.imdecode(
+        np.frombuffer(bytes_data, np.uint8),
+        cv2.IMREAD_COLOR
+    )
+
+    if frame is None:
+        st.error("❌ Could not read the captured image.")
+        return
+
+    detector = FaceDetector()
+    boxes = detector.detect(frame)
+
+    if len(boxes) == 0:
+        st.error("❌ No face detected. Please take another photo.")
+        return
+
+    if len(boxes) > 1:
+        st.warning("⚠️ Multiple faces detected. Keep only one person in the photo.")
+        return
+
+    face = detector.crop_face(frame, boxes[0])
+
+    existing = count_samples(student["roll_number"])
+    sample_number = existing + 1
+
+    save_face_sample(
+        student["roll_number"],
+        face,
+        sample_number
+    )
+
+    st.success(
+        f"✅ Face sample {sample_number} saved successfully!"
+    )
+
+    st.image(
+        frame,
+        channels="BGR",
+        caption="Captured face"
+    )
+
+    st.write(
+        f"Total samples: **{sample_number}**"
+    )
+
+    if sample_number >= 5:
+        with st.spinner("Training face recognizer..."):
+            all_students = db.get_students()
+            _, samples = retrain_all(all_students)
+
+            if student["id"] in samples:
+                db.set_face_enrolled(student["id"], True)
+                st.success(
+                    "🎉 Face enrollment completed successfully!"
+                )
+            else:
+                st.error("❌ Training failed. Please capture another sample.")
+
+    else:
+        st.info(
+            f"📸 Capture at least {5 - sample_number} more photo(s) "
+            "from slightly different angles."
         )
-
-        detector = FaceDetector()
-        faces = detector.detect(frame)
-
-        if len(faces) == 0:
-            st.error("❌ No face detected. Please try again.")
-            return
-
-        if len(faces) > 1:
-            st.warning("⚠️ Multiple faces detected. Keep only one face visible.")
-            return
-
-        face = detector.crop_face(frame, faces[0])
-
-        student_dir = os.path.join(
-            config.STUDENT_FACES_DIR,
-            str(student["id"])
-        )
-
-        os.makedirs(student_dir, exist_ok=True)
-
-        existing = len(os.listdir(student_dir))
-        filename = os.path.join(
-            student_dir,
-            f"{existing + 1}.jpg"
-        )
-
-        cv2.imwrite(filename, face)
-
-        st.success(
-            f"✅ Face sample {existing + 1} captured successfully."
-        )
-
-        st.image(frame, channels="BGR")
-
-        if st.button("🔄 Capture Another Photo"):
-            st.rerun()
+           
