@@ -32,13 +32,12 @@ class FaceDetector:
                 "to the vision folder."
             )
 
-        self.cascade = cv2.CascadeClassifier(cascade_path)
+      self.cascade = cv2.CascadeClassifier()
 
-        if self.cascade.empty():
-            raise RuntimeError(
-                f"Could not load Haar cascade from {cascade_path}"
-            )
-
+if not self.cascade.load(cascade_path):
+    raise RuntimeError(
+        f"Could not load Haar cascade from {cascade_path}"
+    )
     def detect(self, frame_bgr):
 
         gray = cv2.cvtColor(
