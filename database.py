@@ -190,19 +190,24 @@ def delete_student(student_id):
 
 def get_students(department=None, section=None):
     conn = get_connection()
+
     query = "SELECT * FROM students WHERE 1=1"
     params = []
+
     if department:
-        query += " AND department=?"
+        query += " AND LOWER(TRIM(department)) = LOWER(TRIM(?))"
         params.append(department)
+
     if section:
-        query += " AND section=?"
+        query += " AND LOWER(TRIM(section)) = LOWER(TRIM(?))"
         params.append(section)
+
     query += " ORDER BY roll_number"
+
     rows = conn.execute(query, params).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
 
+    return [dict(r) for r in rows]
 
 def get_student_by_roll(roll_number):
     conn = get_connection()
