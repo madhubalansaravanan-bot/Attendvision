@@ -7,6 +7,7 @@ This file only handles: page config, DB init, the login gate, and routing
 to the selected view. Each view lives in views/ and owns its own UI logic.
 """
 import streamlit as st
+import os
 
 # ================= ATTENDVISION UI =================
 
