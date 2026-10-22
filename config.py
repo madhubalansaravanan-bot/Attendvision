@@ -18,7 +18,12 @@ for _d in (DATA_DIR, STUDENTS_DIR, MODELS_DIR, ATTENDANCE_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 
 # --- Environment variables (see .env.example) ---------------------------
-DATABASE_URL = os.environ.get("DATABASE_URL", str(DATA_DIR / "attendvision.db"))
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+
+if not DATABASE_URL:
+    raise RuntimeError(
+        "DATABASE_URL is missing. Configure it in Streamlit Cloud Secrets."
+    )
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
 SECRET_KEY = os.environ.get("SECRET_KEY", "dev-secret-change-me")
