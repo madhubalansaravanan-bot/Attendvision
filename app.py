@@ -189,7 +189,10 @@ from views import dashboard, students, subjects, attendance, history, reports, s
 st.set_page_config(page_title="AttendVision", page_icon="🎓", layout="wide")
 
 db.init_db()
-db.seed_demo_data()
+
+# Seed demo data only when explicitly enabled
+if os.environ.get("ENABLE_DEMO_DATA", "false").lower() == "true":
+    db.seed_demo_data()
 
 NAV_ITEMS = {
     "Dashboard": dashboard,
