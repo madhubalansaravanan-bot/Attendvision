@@ -1,58 +1,89 @@
-"""
-AttendVision - enrollment helpers.
 
-Face samples are stored on disk as grayscale JPEGs under
-data/students/<roll_number>/, one folder per student. This keeps the
-database free of large binary blobs (the `face_data` field in the spec's
-schema is realized here as "face_enrolled" flag + files on disk) and
-makes it trivial to retrain the recognizer from scratch at any time.
-"""
+"""Persistent face-sample storage using a private Supabase Storage bucket."""
+from io import BytesIO
+
 import cv2
+import numpy as np
+import streamlit as st
+from supabase import create_client
 
 import config
-from vision.detector import FaceDetector
 from vision.recognizer import FaceRecognizer
+
+BUCKET = "face-samples"
+
+
+def _storage():
+    url = st.secrets.get("SUPABASE_URL", "")
+    key = st.secrets.get("SUPABASE_SERVICE_ROLE_KEY", "")
+    if not url or not key:
+        raise RuntimeError(
+            "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY "
+            "must be configured in Streamlit Secrets."
+        )
+    return create_client(url, key).storage.from_(BUCKET)
 
 
 def student_dir(roll_number):
-    d = config.STUDENTS_DIR / roll_number
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    # Retained for compatibility; samples are stored in Supabase.
+    return config.STUDENTS_DIR / roll_number
 
 
 def save_face_sample(roll_number, face_gray, sample_index):
-    path = student_dir(roll_number) / f"{sample_index:03d}.jpg"
-    cv2.imwrite(str(path), face_gray)
+    path = f"{roll_number}/{sample_index:03d}.jpg"
+    ok, encoded = cv2.imencode(".jpg", face_gray)
+    if not ok:
+        raise RuntimeError("Could not encode face sample.")
+
+    _storage().upload(
+        path,
+        encoded.tobytes(),
+        {"content-type": "image/jpeg", "upsert": "true"},
+    )
     return path
 
 
 def count_samples(roll_number):
-    d = config.STUDENTS_DIR / roll_number
-    if not d.exists():
-        return 0
-    return len(list(d.glob("*.jpg")))
+    files = _storage().list(path=roll_number)
+    return sum(
+        1 for item in files
+        if item.get("name", "").lower().endswith(".jpg")
+    )
 
 
 def retrain_all(students):
-    """students: list of student dicts (must include 'id' and 'roll_number').
-    Rebuilds the recognizer from every enrolled student's saved samples."""
-    detector = FaceDetector()  # noqa: F841 (kept for API symmetry / future use)
     samples_by_student_id = {}
+    storage = _storage()
 
     for student in students:
         roll = student["roll_number"]
-        d = config.STUDENTS_DIR / roll
-        if not d.exists():
+        try:
+            files = storage.list(path=roll)
+        except Exception:
             continue
+
         images = []
-        for img_path in sorted(d.glob("*.jpg")):
-            img = cv2.imread(str(img_path), cv2.IMREAD_GRAYSCALE)
-            if img is not None:
-                images.append(img)
+        for item in files:
+            name = item.get("name", "")
+            if not name.lower().endswith(".jpg"):
+                continue
+            remote_path = f"{roll}/{name}"
+            try:
+                content = storage.download(remote_path)
+                image = cv2.imdecode(
+                    np.frombuffer(content, np.uint8),
+                    cv2.IMREAD_GRAYSCALE,
+                )
+                if image is not None:
+                    images.append(image)
+            except Exception:
+                continue
+
         if images:
             samples_by_student_id[student["id"]] = images
 
     recognizer = FaceRecognizer()
     if samples_by_student_id:
         recognizer.train(samples_by_student_id)
+
     return recognizer, samples_by_student_id
