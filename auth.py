@@ -52,7 +52,7 @@ def login(identifier: str, password: str):
                 section,
                 email
             FROM students
-            WHERE roll_number = ?
+            WHERE roll_number = %s
             """,
             (identifier,)
         ).fetchone()
