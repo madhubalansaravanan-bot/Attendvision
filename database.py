@@ -485,19 +485,55 @@ def get_student_attendance_percentage(student_id):
         return 0.0
 
     return round((present / total_sessions) * 100, 1)
+
 def get_absent_students(session_id):
-    """Return students absent from a closed session's class."""
+    """Return absent students from a closed session."""
     with get_connection() as conn:
         session = conn.execute("""
             SELECT sess.id, sess.section, sess.status,
                    sub.department, sub.year
-            FROM attendance_sessions sess
-            JOIN subjects sub ON sub.id = sess.subject_id
+            FROM attendance_sessions AS sess
+            JOIN subjects AS sub ON sub.id = sess.subject_id
             WHERE sess.id = %s
         """, (session_id,)).fetchone()
 
         if not session or session["status"] != "closed":
             return []
+
+        department = session["department"] or ""
+        year = session["year"] or ""
+        section = session["section"]
+
+        if section is None:
+            section_filter = ""
+            params = [department, year, session_id]
+        else:
+            section_filter = """
+                AND LOWER(TRIM(COALESCE(s.section, '')))
+                    = LOWER(TRIM(%s))
+            """
+            params = [department, year, section, session_id]
+
+        query = """
+            SELECT s.id, s.roll_number, s.name AS student_name
+            FROM students AS s
+            WHERE LOWER(TRIM(COALESCE(s.department, '')))
+                    = LOWER(TRIM(%s))
+              AND LOWER(TRIM(COALESCE(s.year, '')))
+                    = LOWER(TRIM(%s))
+        """ + section_filter + """
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM attendance_records AS ar
+                  WHERE ar.session_id = %s
+                    AND ar.student_id = s.id
+                    AND ar.status = 'present'
+              )
+            ORDER BY s.roll_number
+        """
+
+        return conn.execute(query, params).fetchall()
+
 
         return conn.execute("""
             SELECT s.id, s.roll_number, s.name AS student_name
