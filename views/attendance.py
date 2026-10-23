@@ -260,17 +260,20 @@ def render_live():
         type="primary"
     ):
 
-        db.end_session(
-            session_id
-        )
+db.end_session(session_id)
 
-        clear_attendance_state()
+# Get absentees after closing the session
+absent_students = db.get_absent_students(session_id)
 
-        st.success(
-            "Attendance session ended."
-        )
+clear_attendance_state()
 
-        st.rerun()
+# Preserve the absent list after rerun
+st.session_state["last_absent_students"] = absent_students
+st.session_state["last_absent_session_id"] = session_id
+
+st.success("Attendance session ended.")
+st.rerun()
+
 
 
 def process_attendance_photo(
