@@ -1,5 +1,5 @@
 
-"""AttendVision attendance workflow."""
+"""AttendVision attendance workflow with face-recognition diagnostics."""
 
 from datetime import date
 
@@ -9,8 +9,7 @@ import streamlit as st
 
 import database as db
 from vision.detector import FaceDetector
-from vision.recognizer import FaceRecognizer
-from vision.enrollment import retrain_all
+from vision.enrollment import count_samples, retrain_all
 
 
 def render():
@@ -61,13 +60,14 @@ def render_setup():
         return
 
     students = db.get_students(
-        department=department,
-        section=section,
+        department=department.strip(),
+        section=section.strip(),
     )
 
     if not students:
         st.error(
-            f"No students found for {department} - Section {section}."
+            f"No students found for {department} - Section {section}. "
+            "Check the department and section values in your database."
         )
         return
 
@@ -77,18 +77,69 @@ def render_setup():
         st.error("Your login session expired. Please log in again.")
         return
 
-    # Rebuild the model from persistent Supabase samples.
+    # --------------------------------------------------------
+    # DIAGNOSTICS: Check persistent samples and train the model.
+    # --------------------------------------------------------
+
+    st.subheader("Face Recognition Diagnostics")
+
+    storage_counts = {}
+
+    for student in students:
+        roll = str(student["roll_number"])
+
+        try:
+            stored_count = count_samples(roll)
+            storage_counts[roll] = stored_count
+
+            st.write(
+                f"**{roll} — {student['name']}**: "
+                f"{stored_count} stored sample(s)"
+            )
+
+        except Exception as exc:
+            storage_counts[roll] = None
+            st.error(
+                f"Storage check failed for {roll}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
     try:
-        with st.spinner("Loading face samples and training recognizer..."):
+        with st.spinner(
+            "Downloading stored face images and training recognizer..."
+        ):
             recognizer, samples = retrain_all(students)
 
+        st.write(
+            "Students with readable samples:",
+            len(samples),
+        )
+        st.write(
+            "Recognizer trained:",
+            recognizer.is_trained,
+        )
+
+        if not recognizer.is_trained:
+            st.error(
+                "The recognizer was not trained. "
+                "Check the sample counts and storage errors above."
+            )
+            return
+
     except Exception as exc:
-        st.error(f"Could not load enrolled faces: {exc}")
+        st.error(
+            f"Face model loading failed: {type(exc).__name__}: {exc}"
+        )
+        st.info(
+            "Check that SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY "
+            "are configured in Streamlit Secrets, and that the "
+            "'face-samples' bucket contains the expected image files."
+        )
         return
 
-    if not recognizer.is_trained:
-        st.error("No trained face model is available.")
-        return
+    # --------------------------------------------------------
+    # CREATE OR REUSE ATTENDANCE SESSION.
+    # --------------------------------------------------------
 
     subject_id = subject_options[subject_label]
     session_date_str = session_date.isoformat()
@@ -98,7 +149,7 @@ def render_setup():
             subject_id,
             session_date_str,
             int(hour),
-            section,
+            section.strip(),
         )
 
         if existing:
@@ -109,23 +160,25 @@ def render_setup():
                 user["id"],
                 session_date_str,
                 int(hour),
-                section,
+                section.strip(),
             )
 
     except Exception as exc:
         st.error(f"Could not create attendance session: {exc}")
         return
 
+    # Store the trained recognizer and session information.
     st.session_state["attendance_recognizer"] = recognizer
     st.session_state["attendance_running"] = True
     st.session_state["attendance_session_id"] = session_id
     st.session_state["attendance_students"] = {
-        s["id"]: s for s in students
+        student["id"]: student for student in students
     }
     st.session_state["attendance_subject_label"] = subject_label
     st.session_state["attendance_hour"] = int(hour)
     st.session_state["attendance_date"] = session_date_str
 
+    st.success("Face model loaded and attendance session is ready.")
     st.rerun()
 
 
@@ -140,8 +193,17 @@ def render_live():
 
     st.info(
         "Take a clear classroom photo. The system will detect "
-        "and attempt to recognize enrolled students."
+        "faces and attempt to match them with enrolled students."
     )
+
+    recognizer = st.session_state.get("attendance_recognizer")
+
+    if recognizer is None or not recognizer.is_trained:
+        st.error(
+            "The face model is unavailable. End this session "
+            "and start attendance again to reload stored samples."
+        )
+        return
 
     picture = st.camera_input(
         "Take Attendance Photo",
@@ -153,19 +215,30 @@ def render_live():
 
     st.divider()
 
-    records = db.get_session_records(session_id)
-    present_ids = {record["student_id"] for record in records}
+    try:
+        records = db.get_session_records(session_id)
+    except Exception as exc:
+        st.error(f"Could not load attendance records: {exc}")
+        records = []
+
+    present_ids = {
+        record["student_id"] for record in records
+    }
 
     col1, col2 = st.columns(2)
     col1.metric("Present", len(present_ids))
-    col2.metric("Remaining", max(len(students) - len(present_ids), 0))
+    col2.metric(
+        "Remaining",
+        max(len(students) - len(present_ids), 0),
+    )
 
     st.subheader("📋 Live Attendance")
 
     if records:
         for record in records[::-1]:
             st.success(
-                f"✅ {record['student_name']} ({record['roll_number']})"
+                f"✅ {record['student_name']} "
+                f"({record['roll_number']})"
             )
     else:
         st.info("No students recognized yet.")
@@ -181,6 +254,7 @@ def render_live():
             return
 
         clear_attendance_state()
+
         st.session_state["last_absent_students"] = absent_students
         st.session_state["last_absent_session_id"] = session_id
 
@@ -206,19 +280,25 @@ def process_attendance_photo(picture, session_id, students):
 
         if recognizer is None or not recognizer.is_trained:
             st.error(
-                "The face model is unavailable. End the session "
-                "and start attendance again."
+                "Face model unavailable. Please end the session "
+                "and start it again."
             )
             return
 
         boxes = detector.detect(frame)
 
     except Exception as exc:
-        st.error(f"Face detection or recognition error: {exc}")
+        st.error(
+            f"Face detection or recognition error: "
+            f"{type(exc).__name__}: {exc}"
+        )
         return
 
     if len(boxes) == 0:
-        st.warning("No faces detected. Try better lighting.")
+        st.warning(
+            "No faces detected. Try better lighting and ensure "
+            "faces are clearly visible."
+        )
         st.image(frame, channels="BGR", caption="Captured image")
         return
 
@@ -227,20 +307,25 @@ def process_attendance_photo(picture, session_id, students):
 
     for box in boxes:
         x, y, w, h = box
+
         face_gray = detector.crop_face(frame, box)
 
         try:
             student_id, distance = recognizer.predict(face_gray)
         except Exception as exc:
-            st.error(f"Could not recognize a face: {exc}")
+            st.error(f"Face prediction failed: {exc}")
             continue
 
+        # Never mark a face unless its predicted ID belongs to
+        # the students selected for this attendance session.
         if student_id is not None and student_id in students:
             student = students[student_id]
 
             try:
                 db.mark_attendance(
-                    session_id, student_id, float(distance)
+                    session_id,
+                    student_id,
+                    float(distance),
                 )
             except Exception as exc:
                 st.error(
@@ -252,8 +337,13 @@ def process_attendance_photo(picture, session_id, students):
             recognized_names.append(student["name"])
 
             cv2.rectangle(
-                frame, (x, y), (x + w, y + h), (0, 200, 0), 3
+                frame,
+                (x, y),
+                (x + w, y + h),
+                (0, 200, 0),
+                3,
             )
+
             cv2.putText(
                 frame,
                 f"{student['name']} ({student['roll_number']})",
@@ -263,11 +353,18 @@ def process_attendance_photo(picture, session_id, students):
                 (0, 200, 0),
                 2,
             )
+
         else:
             unknown_count += 1
+
             cv2.rectangle(
-                frame, (x, y), (x + w, y + h), (0, 0, 255), 2
+                frame,
+                (x, y),
+                (x + w, y + h),
+                (0, 0, 255),
+                2,
             )
+
             cv2.putText(
                 frame,
                 "Unknown",
@@ -278,13 +375,19 @@ def process_attendance_photo(picture, session_id, students):
                 2,
             )
 
-    st.image(frame, channels="BGR", caption="Attendance Result")
+    st.image(
+        frame,
+        channels="BGR",
+        caption="Attendance Result",
+    )
 
     for name in dict.fromkeys(recognized_names):
         st.success(f"✅ Attendance marked: {name}")
 
     if unknown_count:
-        st.warning(f"{unknown_count} unknown face(s) detected.")
+        st.warning(
+            f"{unknown_count} unknown face(s) detected."
+        )
 
 
 def clear_attendance_state():
