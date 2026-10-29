@@ -485,6 +485,68 @@ def get_student_attendance_percentage(student_id):
         return 0.0
 
     return round((present / total_sessions) * 100, 1)
+def get_student_subject_attendance(student_id):
+    """Return subject-wise attendance for one student."""
+
+    with get_connection() as conn:
+        rows = conn.execute("""
+            SELECT
+                sub.id AS subject_id,
+                sub.subject_code,
+                sub.subject_name,
+                sub.semester,
+                COUNT(sess.id) AS classes_conducted,
+                COUNT(ar.id) FILTER (
+                    WHERE ar.status = 'present'
+                ) AS classes_attended
+            FROM students st
+            JOIN subjects sub
+              ON LOWER(TRIM(COALESCE(sub.department, '')))
+                 = LOWER(TRIM(COALESCE(st.department, '')))
+             AND LOWER(TRIM(COALESCE(sub.year, '')))
+                 = LOWER(TRIM(COALESCE(st.year, '')))
+            JOIN attendance_sessions sess
+              ON sess.subject_id = sub.id
+             AND sess.status = 'closed'
+             AND (
+                 sess.section IS NULL
+                 OR LOWER(TRIM(COALESCE(sess.section, '')))
+                    = LOWER(TRIM(COALESCE(st.section, ''))
+                    )
+             )
+            LEFT JOIN attendance_records ar
+              ON ar.session_id = sess.id
+             AND ar.student_id = st.id
+            WHERE st.id = %s
+            GROUP BY
+                sub.id,
+                sub.subject_code,
+                sub.subject_name,
+                sub.semester
+            ORDER BY sub.semester, sub.subject_code
+        """, (student_id,)).fetchall()
+
+    summary = []
+
+    for row in rows:
+        conducted = int(row["classes_conducted"] or 0)
+        attended = int(row["classes_attended"] or 0)
+        absent = max(conducted - attended, 0)
+
+        summary.append({
+            "subject_code": row["subject_code"],
+            "subject_name": row["subject_name"],
+            "semester": row["semester"],
+            "classes_conducted": conducted,
+            "classes_attended": attended,
+            "classes_absent": absent,
+            "attendance_percentage": (
+                round(attended / conducted * 100, 1)
+                if conducted else 0.0
+            ),
+        })
+
+    return summary
 
 def get_absent_students(session_id):
     """Return absent students from a closed session."""
