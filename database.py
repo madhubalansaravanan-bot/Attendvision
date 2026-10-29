@@ -624,5 +624,61 @@ def get_absent_students(session_id):
             session["section"],
             session_id,
         )).fetchall()
+def get_student_subject_attendance(student_id):
+    """Return subject-wise attendance for a student."""
+    with get_connection() as conn:
+        rows = conn.execute("""
+            SELECT
+                sub.subject_code,
+                sub.subject_name,
+                sub.semester,
+                COUNT(DISTINCT sess.id) AS classes_conducted,
+                COUNT(DISTINCT CASE
+                    WHEN ar.status = 'present' THEN sess.id
+                END) AS classes_attended
+            FROM students st
+            JOIN subjects sub
+              ON LOWER(TRIM(COALESCE(sub.department, '')))
+                 = LOWER(TRIM(COALESCE(st.department, '')))
+             AND LOWER(TRIM(COALESCE(sub.year, '')))
+                 = LOWER(TRIM(COALESCE(st.year, '')))
+            JOIN attendance_sessions sess
+              ON sess.subject_id = sub.id
+             AND LOWER(TRIM(sess.status)) = 'closed'
+             AND (
+                 sess.section IS NULL
+                 OR TRIM(sess.section) = ''
+                 OR LOWER(TRIM(sess.section))
+                    = LOWER(TRIM(COALESCE(st.section, '')))
+             )
+            LEFT JOIN attendance_records ar
+              ON ar.session_id = sess.id
+             AND ar.student_id = st.id
+            WHERE st.id = %s
+            GROUP BY
+                sub.id,
+                sub.subject_code,
+                sub.subject_name,
+                sub.semester
+            ORDER BY sub.semester, sub.subject_code
+        """, (student_id,)).fetchall()
 
+    result = []
+    for row in rows:
+        conducted = int(row["classes_conducted"] or 0)
+        attended = int(row["classes_attended"] or 0)
+
+        result.append({
+            "subject_code": row["subject_code"],
+            "subject_name": row["subject_name"],
+            "semester": row["semester"],
+            "classes_conducted": conducted,
+            "classes_attended": attended,
+            "classes_absent": max(conducted - attended, 0),
+            "attendance_percentage": round(
+                attended * 100 / conducted, 1
+            ) if conducted else 0.0,
+        })
+
+    return result
     
