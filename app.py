@@ -240,30 +240,104 @@ def render_student_dashboard(user):
     col1, col2, col3, col4 = st.columns(4)
 
     col1.metric("Roll Number", user["roll_number"])
-    col2.metric("Department", user["department"])
-    col3.metric("Year", user["year"])
-    col4.metric("Section", user["section"])
+    col2.metric("Department", user["department"] or "-")
+    col3.metric("Year", user["year"] or "-")
+    col4.metric("Section", user["section"] or "-")
 
     st.divider()
 
-    # Attendance percentage
-    attendance_percentage = db.get_student_attendance_percentage(user["id"])
+    # Overall attendance
+    attendance_percentage = db.get_student_attendance_percentage(
+        user["id"]
+    )
 
-    st.subheader("📊 Attendance")
+    st.subheader("📊 Overall Attendance")
 
     col1, col2 = st.columns(2)
 
-    with col1:
-        st.metric(
-            "Overall Attendance",
-            f"{attendance_percentage}%"
+    col1.metric("Attendance", f"{attendance_percentage}%")
+
+    if attendance_percentage >= 75:
+        col2.success("✅ Attendance Status: Good")
+    else:
+        col2.warning("⚠️ Attendance below 75%")
+
+    st.divider()
+
+    # Subject-wise attendance
+    st.subheader("📚 Subject-wise Attendance")
+
+    try:
+        records = db.get_student_subject_attendance(user["id"])
+    except Exception as e:
+        st.error(f"Unable to load subject attendance: {e}")
+        records = []
+
+    if records:
+        import pandas as pd
+
+        df = pd.DataFrame(records)
+
+        report = df[
+            [
+                "subject_code",
+                "subject_name",
+                "semester",
+                "classes_conducted",
+                "classes_attended",
+                "classes_absent",
+                "attendance_percentage",
+            ]
+        ].copy()
+
+        report.columns = [
+            "Subject Code",
+            "Subject",
+            "Semester",
+            "Classes Conducted",
+            "Classes Attended",
+            "Classes Absent",
+            "Attendance %",
+        ]
+
+        st.dataframe(
+            report,
+            use_container_width=True,
+            hide_index=True,
         )
 
-    with col2:
-        if attendance_percentage >= 75:
-            st.success("✅ Attendance Status: Good")
+        st.subheader("⚠️ Attendance Alerts")
+
+        low_attendance = report[
+            report["Attendance %"] < 75
+        ]
+
+        if not low_attendance.empty:
+            for _, row in low_attendance.iterrows():
+                st.warning(
+                    f"{row['Subject']} ({row['Subject Code']}): "
+                    f"{row['Attendance %']}% attendance"
+                )
         else:
-            st.warning("⚠️ Attendance below 75%")
+            st.success(
+                "All listed subjects are at or above 75% attendance."
+            )
+
+        csv_data = report.to_csv(index=False).encode("utf-8")
+
+        st.download_button(
+            label="⬇️ Download Subject Attendance (CSV)",
+            data=csv_data,
+            file_name=f"attendance_{user['roll_number']}.csv",
+            mime="text/csv",
+        )
+
+    else:
+        st.info(
+            "No completed subject attendance is available yet. "
+            "Check that subjects match your department and year, "
+            "and that attendance sessions have been closed."
+        )
 
     st.divider()
 
@@ -271,15 +345,13 @@ def render_student_dashboard(user):
 
     st.write(f"**Name:** {user['name']}")
     st.write(f"**Roll Number:** {user['roll_number']}")
-    st.write(f"**Department:** {user['department']}")
-    st.write(f"**Year:** {user['year']}")
-    st.write(f"**Section:** {user['section']}")
-
-    st.divider()
+    st.write(f"**Department:** {user['department'] or '-'}")
+    st.write(f"**Year:** {user['year'] or '-'}")
+    st.write(f"**Section:** {user['section'] or '-'}")
 
     st.info(
-        "Your attendance is automatically updated when you are "
-        "recognized by the classroom camera."
+        "Attendance is updated when the classroom camera "
+        "recognizes a student and the attendance record is saved."
     )
 
 
